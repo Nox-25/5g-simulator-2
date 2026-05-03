@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>5G Coverage Simulator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f9;
+        }
+        h1 {
+            text-align: center;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+        }
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            min-width: 300px;
+        }
+        .control-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="range"] {
+            width: 100%;
+        }
+        .canvas-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        canvas {
+            border: 1px solid #ccc;
+            cursor: crosshair;
+        }
+        .stats {
+            margin-top: 15px;
+            font-size: 1.1em;
+        }
+        .legend {
+            display: flex;
+            justify-content: space-between;
+            width: 500px;
+            margin-top: 5px;
+            font-size: 0.9em;
+        }
+        .legend-color-bar {
+            width: 500px;
+            height: 20px;
+            background: linear-gradient(to right, #0000FF, #00FFFF, #00FF00, #FFFF00, #FF0000);
+            border: 1px solid #333;
+        }
+        .view-toggle {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Interactive 5G Coverage Simulator</h1>
+
+    <div class="container">
+        <!-- Controls Panel -->
+        <div class="controls">
+            <h3>Simulation Parameters</h3>
+
+            <div class="control-group">
+                <label for="pt-slider">Transmit Power (Pt): <span id="pt-val">0</span> dBm</label>
+                <input type="range" id="pt-slider" min="-20" max="20" step="1" value="0">
+            </div>
+
+            <div class="control-group">
+                <label for="n-slider">Path Loss Exponent (n): <span id="n-val">3.0</span></label>
+                <input type="range" id="n-slider" min="2.0" max="4.0" step="0.1" value="3.0">
+            </div>
+
+            <div class="control-group">
+                <label for="threshold-slider">Weak Threshold: <span id="threshold-val">-90</span> dBm</label>
+                <input type="range" id="threshold-slider" min="-120" max="-40" step="1" value="-90">
+            </div>
+
+            <div class="control-group view-toggle">
+                <label>View Mode:</label>
+                <label style="font-weight: normal;">
+                    <input type="radio" name="viewMode" value="heatmap" checked> Heatmap
+                </label>
+                <label style="font-weight: normal;">
+                    <input type="radio" name="viewMode" value="weakZones"> Weak Zones
+                </label>
+            </div>
+
+            <button id="clear-btn" style="width: 100%; padding: 10px; cursor: pointer;">Clear All Towers</button>
+            <p style="font-size: 0.9em; color: #555; margin-top: 15px;">
+                <em>Instructions:</em> Click on the grid to place or remove a 5G tower.
+            </p>
+        </div>
+
+        <!-- Canvas and Visualization Panel -->
+        <div class="canvas-container">
+            <canvas id="simCanvas" width="500" height="500"></canvas>
+
+            <div id="heatmap-legend" style="display: block;">
+                <div class="legend-color-bar"></div>
+                <div class="legend">
+                    <span>Weak (-100 dBm)</span>
+                    <span>Strong (0 dBm)</span>
+                </div>
+            </div>
+
+            <div class="stats">
+                <strong>Coverage (> Threshold): </strong> <span id="coverage-stat">0.00</span>%
+                <br>
+                <small>Towers: <span id="tower-count">0</span> | Max Signal: <span id="max-stat">-100</span> dBm</small>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        const gridSize = 100; // Simulated grid size (backend is 100x100)
+        const scale = canvas.width / gridSize; // Scale 100x100 array to 500x500 canvas
+
+        let towers = [];
+        let simulationData = null;
+
+        // UI Elements
+        const ptSlider = document.getElementById('pt-slider');
+        const nSlider = document.getElementById('n-slider');
+        const thresholdSlider = document.getElementById('threshold-slider');
+        const ptVal = document.getElementById('pt-val');
+        const nVal = document.getElementById('n-val');
+        const thresholdVal = document.getElementById('threshold-val');
+        const radios = document.getElementsByName('viewMode');
+
+        const clearBtn = document.getElementById('clear-btn');
+        const heatmapLegend = document.getElementById('heatmap-legend');
+
+        function updateSliderValues() {
+            ptVal.innerText = ptSlider.value;
+            nVal.innerText = parseFloat(nSlider.value).toFixed(1);
+            thresholdVal.innerText = thresholdSlider.value;
+        }
+
+        // Convert dBm to a color (using jet-like colormap from blue to red)
+        function dbmToColor(dbm) {
+            // Map -100 to 0 to an index 0 to 1
+            let minDb = -100;
+            let maxDb = 0;
+            let val = (dbm - minDb) / (maxDb - minDb);
+            val = Math.max(0, Math.min(1, val)); // clamp
+
+            // Jet Colormap logic (approximate)
+            let r = 0, g = 0, b = 0;
+            if (val < 0.25) {
+                b = 255;
+                g = 255 * (val / 0.25);
+            } else if (val < 0.5) {
+                g = 255;
+                b = 255 * (1 - (val - 0.25) / 0.25);
+            } else if (val < 0.75) {
+                g = 255;
+                r = 255 * ((val - 0.5) / 0.25);
+            } else {
+                r = 255;
+                g = 255 * (1 - (val - 0.75) / 0.25);
+            }
+            return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+        }
+
+        function drawTowers() {
+            ctx.fillStyle = 'black';
+            towers.forEach(t => {
+                ctx.beginPath();
+                // Draw tower marker, adjusted by scale
+                ctx.arc(t[1] * scale + scale/2, t[0] * scale + scale/2, 5, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.stroke();
+            });
+        }
+
+        function renderCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            let mode = 'heatmap';
+            radios.forEach(r => { if(r.checked) mode = r.value; });
+
+            if (mode === 'heatmap') {
+                heatmapLegend.style.display = 'block';
+            } else {
+                heatmapLegend.style.display = 'none';
+            }
+
+            if (simulationData) {
+                for (let i = 0; i < gridSize; i++) {
+                    for (let j = 0; j < gridSize; j++) {
+                        if (mode === 'heatmap') {
+                            ctx.fillStyle = dbmToColor(simulationData.heatmap[i][j]);
+                        } else if (mode === 'weakZones') {
+                            ctx.fillStyle = simulationData.weak_zones[i][j] === 1 ? 'red' : 'white';
+                        }
+                        // x corresponds to j (columns), y corresponds to i (rows)
+                        ctx.fillRect(j * scale, i * scale, scale, scale);
+                    }
+                }
+            } else {
+                // Default empty grid
+                ctx.fillStyle = '#eee';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            drawTowers();
+        }
+
+        function updateStats() {
+            if (simulationData) {
+                document.getElementById('coverage-stat').innerText = simulationData.coverage_percentage.toFixed(2);
+                document.getElementById('max-stat').innerText = simulationData.max_signal.toFixed(1);
+            } else {
+                document.getElementById('coverage-stat').innerText = "0.00";
+                document.getElementById('max-stat').innerText = "-100";
+            }
+            document.getElementById('tower-count').innerText = towers.length;
+        }
+
+        async function fetchSimulation() {
+            const payload = {
+                size: gridSize,
+                towers: towers,
+                Pt: parseFloat(ptSlider.value),
+                n: parseFloat(nSlider.value),
+                threshold: parseFloat(thresholdSlider.value)
+            };
+
+            try {
+                const response = await fetch('/simulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                simulationData = await response.json();
+                renderCanvas();
+                updateStats();
+            } catch (error) {
+                console.error("Simulation fetch error:", error);
+            }
+        }
+
+        // Events
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            // Get pixel coordinates
+            const xPixel = e.clientX - rect.left;
+            const yPixel = e.clientY - rect.top;
+
+            // Map pixel to 100x100 grid indices
+            // Remember: Canvas X is columns (j), Canvas Y is rows (i)
+            const j = Math.floor(xPixel / scale);
+            const i = Math.floor(yPixel / scale);
+
+            // Check if clicking near an existing tower to remove it
+            const hitRadius = 2; // Allow small margin
+            const index = towers.findIndex(t => Math.abs(t[0] - i) <= hitRadius && Math.abs(t[1] - j) <= hitRadius);
+
+            if (index > -1) {
+                towers.splice(index, 1);
+            } else {
+                towers.push([i, j]);
+            }
+
+            fetchSimulation();
+        });
+
+        [ptSlider, nSlider, thresholdSlider].forEach(slider => {
+            slider.addEventListener('input', () => {
+                updateSliderValues();
+            });
+            slider.addEventListener('change', () => {
+                fetchSimulation();
+            });
+        });
+
+        radios.forEach(radio => {
+            radio.addEventListener('change', renderCanvas);
+        });
+
+        clearBtn.addEventListener('click', () => {
+            towers = [];
+            fetchSimulation();
+        });
+
+        // Init
+        updateSliderValues();
+        renderCanvas();
+        updateStats();
+    </script>
+</body>
+</html>
