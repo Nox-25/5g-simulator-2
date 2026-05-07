@@ -1,3 +1,5 @@
 numpy
 matplotlib
 flask
+scikit-learn
+scipy

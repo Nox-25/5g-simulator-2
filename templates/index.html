@@ -93,11 +93,27 @@
             </div>
 
             <div class="control-group">
+                <label for="frequency-slider">Frequency (MHz): <span id="frequency-val">3500</span></label>
+                <input type="range" id="frequency-slider" min="700" max="6000" step="100" value="3500">
+            </div>
+
+            <div class="control-group">
                 <label for="threshold-slider">Weak Threshold: <span id="threshold-val">-90</span> dBm</label>
                 <input type="range" id="threshold-slider" min="-120" max="-40" step="1" value="-90">
             </div>
 
-            <div class="control-group view-toggle">
+            <div class="control-group" style="border-top: 1px solid #ccc; padding-top: 10px;">
+                <label>AI & Optimization</label>
+                <div style="display: flex; gap: 10px; margin-bottom: 5px;">
+                    <input type="number" id="num-users" value="100" style="width: 60px;">
+                    <button id="scatter-btn" style="flex: 1;">Scatter Users</button>
+                </div>
+                <button id="auto-place-btn" style="width: 100%; padding: 10px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                    Auto-Place Towers (K-Means)
+                </button>
+            </div>
+
+            <div class="control-group view-toggle" style="border-top: 1px solid #ccc; padding-top: 10px;">
                 <label>View Mode:</label>
                 <label style="font-weight: normal;">
                     <input type="radio" name="viewMode" value="heatmap" checked> Heatmap
@@ -105,9 +121,13 @@
                 <label style="font-weight: normal;">
                     <input type="radio" name="viewMode" value="weakZones"> Weak Zones
                 </label>
+                <label style="font-weight: normal;">
+                    <input type="radio" name="viewMode" value="voronoi"> Voronoi (Cells)
+                </label>
             </div>
 
-            <button id="clear-btn" style="width: 100%; padding: 10px; cursor: pointer;">Clear All Towers</button>
+            <button id="clear-btn" style="width: 100%; padding: 10px; cursor: pointer; margin-bottom: 10px;">Clear All Towers</button>
+            <button id="clear-users-btn" style="width: 100%; padding: 10px; cursor: pointer;">Clear Users</button>
             <p style="font-size: 0.9em; color: #555; margin-top: 15px;">
                 <em>Instructions:</em> Click on the grid to place or remove a 5G tower.
             </p>
@@ -140,15 +160,24 @@
         const scale = canvas.width / gridSize; // Scale 100x100 array to 500x500 canvas
 
         let towers = [];
+        let users = [];
         let simulationData = null;
 
         // UI Elements
         const ptSlider = document.getElementById('pt-slider');
         const nSlider = document.getElementById('n-slider');
         const thresholdSlider = document.getElementById('threshold-slider');
+        const frequencySlider = document.getElementById('frequency-slider');
+
         const ptVal = document.getElementById('pt-val');
         const nVal = document.getElementById('n-val');
         const thresholdVal = document.getElementById('threshold-val');
+        const frequencyVal = document.getElementById('frequency-val');
+
+        const scatterBtn = document.getElementById('scatter-btn');
+        const autoPlaceBtn = document.getElementById('auto-place-btn');
+        const clearUsersBtn = document.getElementById('clear-users-btn');
+        const numUsersInput = document.getElementById('num-users');
         const radios = document.getElementsByName('viewMode');
 
         const clearBtn = document.getElementById('clear-btn');
@@ -158,6 +187,7 @@
             ptVal.innerText = ptSlider.value;
             nVal.innerText = parseFloat(nSlider.value).toFixed(1);
             thresholdVal.innerText = thresholdSlider.value;
+            frequencyVal.innerText = frequencySlider.value;
         }
 
         // Convert dBm to a color (using jet-like colormap from blue to red)
@@ -186,15 +216,31 @@
             return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
         }
 
+        function drawUsers() {
+            ctx.fillStyle = 'black'; // small black dots for users
+            users.forEach(u => {
+                ctx.beginPath();
+                ctx.arc(u[1] * scale + scale/2, u[0] * scale + scale/2, 1.5, 0, 2 * Math.PI);
+                ctx.fill();
+            });
+        }
+
         function drawTowers() {
-            ctx.fillStyle = 'black';
             towers.forEach(t => {
                 ctx.beginPath();
                 // Draw tower marker, adjusted by scale
-                ctx.arc(t[1] * scale + scale/2, t[0] * scale + scale/2, 5, 0, 2 * Math.PI);
+                ctx.arc(t[1] * scale + scale/2, t[0] * scale + scale/2, 6, 0, 2 * Math.PI);
+                ctx.fillStyle = 'black';
                 ctx.fill();
+                ctx.lineWidth = 2;
                 ctx.strokeStyle = 'white';
                 ctx.stroke();
+
+                // Add a small antenna indicator
+                ctx.fillStyle = 'yellow';
+                ctx.beginPath();
+                ctx.arc(t[1] * scale + scale/2, t[0] * scale + scale/2, 2, 0, 2 * Math.PI);
+                ctx.fill();
             });
         }
 
@@ -217,7 +263,26 @@
                             ctx.fillStyle = dbmToColor(simulationData.heatmap[i][j]);
                         } else if (mode === 'weakZones') {
                             ctx.fillStyle = simulationData.weak_zones[i][j] === 1 ? 'red' : 'white';
+                        } else if (mode === 'voronoi') {
+                            // Very simple Voronoi: color based on nearest tower
+                            if (towers.length > 0) {
+                                let minDist = Infinity;
+                                let nearestIdx = 0;
+                                towers.forEach((t, idx) => {
+                                    let d = Math.pow(i - t[0], 2) + Math.pow(j - t[1], 2);
+                                    if (d < minDist) {
+                                        minDist = d;
+                                        nearestIdx = idx;
+                                    }
+                                });
+                                // Assign a distinct color to each cell based on tower index
+                                const hue = (nearestIdx * 137.5) % 360;
+                                ctx.fillStyle = `hsl(${hue}, 70%, 50%)`;
+                            } else {
+                                ctx.fillStyle = 'white';
+                            }
                         }
+
                         // x corresponds to j (columns), y corresponds to i (rows)
                         ctx.fillRect(j * scale, i * scale, scale, scale);
                     }
@@ -228,6 +293,7 @@
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
             }
 
+            drawUsers();
             drawTowers();
         }
 
@@ -246,9 +312,11 @@
             const payload = {
                 size: gridSize,
                 towers: towers,
+                users: users,
                 Pt: parseFloat(ptSlider.value),
                 n: parseFloat(nSlider.value),
-                threshold: parseFloat(thresholdSlider.value)
+                threshold: parseFloat(thresholdSlider.value),
+                frequency: parseFloat(frequencySlider.value)
             };
 
             try {
@@ -290,13 +358,61 @@
             fetchSimulation();
         });
 
-        [ptSlider, nSlider, thresholdSlider].forEach(slider => {
+        [ptSlider, nSlider, thresholdSlider, frequencySlider].forEach(slider => {
             slider.addEventListener('input', () => {
                 updateSliderValues();
             });
             slider.addEventListener('change', () => {
                 fetchSimulation();
             });
+        });
+
+        scatterBtn.addEventListener('click', async () => {
+            const payload = {
+                size: gridSize,
+                num_users: parseInt(numUsersInput.value) || 100,
+                num_clusters: 4 // Hardcode for now, could be a UI element
+            };
+            try {
+                const response = await fetch('/scatter_users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                users = data.users;
+                renderCanvas();
+            } catch (error) {
+                console.error("Scatter error:", error);
+            }
+        });
+
+        autoPlaceBtn.addEventListener('click', async () => {
+            if (users.length === 0) {
+                alert("Please scatter users first!");
+                return;
+            }
+            // Ask user how many towers they want to place based on clusters
+            // or just default to 4 based on the clusters
+            const numTowersToPlace = parseInt(prompt("How many towers to place?", "4")) || 4;
+
+            const payload = {
+                users: users,
+                num_towers: numTowersToPlace
+            };
+
+            try {
+                const response = await fetch('/auto_place', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                towers = data.towers;
+                fetchSimulation(); // re-run simulation with new towers
+            } catch (error) {
+                console.error("Auto-place error:", error);
+            }
         });
 
         radios.forEach(radio => {
@@ -306,6 +422,11 @@
         clearBtn.addEventListener('click', () => {
             towers = [];
             fetchSimulation();
+        });
+
+        clearUsersBtn.addEventListener('click', () => {
+            users = [];
+            renderCanvas();
         });
 
         // Init
